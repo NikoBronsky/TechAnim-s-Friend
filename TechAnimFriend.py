@@ -1,70 +1,93 @@
 bl_info = {
     "name": "TechAnim Friend",
     "author": "Aleksandr Dymov",
-    "version": (1, 5),
-    "blender": (2, 80, 0),
-    "location": "3D View > Sidebar > Tech Anim Tools",
+    "version": (1, 8),
+    "blender": (4, 2, 2),
+    "location": "3D View > Sidebar > Item",
     "description": "Tools to assist technical animators",
     "category": "Rigging",
 }
 
 import bpy
 import bmesh
-from bpy.props import IntProperty
+from bpy.props import IntProperty, FloatProperty
 
-# Operator CopyBonesTransformsOperator
-class CopyBonesTransformsOperator(bpy.types.Operator):
-    """Copy bone transforms from donor to recipient armature"""
-    bl_idname = "object.copy_bones_transforms"
-    bl_label = "Copy Bones Transforms"
+# Operator CleanUpWeightsOperator
+class CleanUpWeightsOperator(bpy.types.Operator):
+    """Clean up weights: remove weights below threshold and limit max influences per vertex"""
+    bl_idname = "object.clean_up_weights"
+    bl_label = "Clean Up Weights"
     bl_options = {'REGISTER', 'UNDO'}
 
-    def execute(self, context):
-        # Ваш код оператора
-        return {'FINISHED'}
-
-# Operator CreateConstraintsOperator
-class CreateConstraintsOperator(bpy.types.Operator):
-    """Create constraints from donor to recipient armature"""
-    bl_idname = "object.create_constraints"
-    bl_label = "Create Constraints"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        # Ваш код оператора
-        return {'FINISHED'}
-
-# Operator RemoveConstraintsOperator
-class RemoveConstraintsOperator(bpy.types.Operator):
-    """Remove constraints from recipient armature"""
-    bl_idname = "object.remove_constraints"
-    bl_label = "Remove Constraints"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        # Ваш код оператора
-        return {'FINISHED'}
-
-# Operator CheckWeightAmountOperator
-class CheckWeightAmountOperator(bpy.types.Operator):
-    """Select vertices influenced by more than a specified number of bones"""
-    bl_idname = "object.check_weight_amount"
-    bl_label = "Check Weight Amount"
-    bl_options = {'REGISTER', 'UNDO'}
+    threshold: FloatProperty(
+        name="Threshold",
+        description="Weights below this value will be removed",
+        default=0.050,
+        min=0.0,
+        max=1.0,
+    )
 
     max_influences: IntProperty(
         name="Max Influences",
         description="Maximum number of bone influences per vertex",
-        default=3,
+        default=4,
         min=1,
     )
 
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None and context.active_object.type == 'MESH'
+
     def execute(self, context):
-        # Ваш код оператора
+        obj = context.active_object
+
+        # Switch to Object Mode to access vertex groups
+        current_mode = context.mode
+        if current_mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        mesh = obj.data
+        vgroups = obj.vertex_groups
+
+        if not vgroups:
+            self.report({'WARNING'}, "Object has no vertex groups")
+            bpy.ops.object.mode_set(mode=current_mode)
+            return {'CANCELLED'}
+
+        num_weights_removed = 0
+        num_vertices_adjusted = 0
+
+        for vert in mesh.vertices:
+            # Get all groups and weights for this vertex
+            weights = []
+            for g in vert.groups:
+                group = vgroups[g.group]
+                weight = g.weight
+                if weight < self.threshold:
+                    # Remove weight below threshold
+                    group.remove([vert.index])
+                    num_weights_removed += 1
+                else:
+                    weights.append((group, weight))
+
+            # Sort weights in descending order
+            weights.sort(key=lambda x: x[1], reverse=True)
+
+            if len(weights) > self.max_influences:
+                # Remove smallest weights to limit max influences
+                for group, weight in weights[self.max_influences:]:
+                    group.remove([vert.index])
+                    num_weights_removed += 1
+                num_vertices_adjusted += 1
+
+        # Restore original mode
+        if current_mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode=current_mode)
+
+        self.report({'INFO'}, f"Removed {num_weights_removed} weights; adjusted {num_vertices_adjusted} vertices to have max {self.max_influences} influences")
         return {'FINISHED'}
 
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
+# Other existing operators...
 
 # Operator SmoothSelectedVerticesWeightsOperator
 class SmoothSelectedVerticesWeightsOperator(bpy.types.Operator):
@@ -81,9 +104,16 @@ class SmoothSelectedVerticesWeightsOperator(bpy.types.Operator):
         max=100,
     )
 
+    threshold: FloatProperty(
+        name="Threshold",
+        description="Weights below this value will be removed",
+        default=0.050,
+        min=0.0,
+        max=1.0,
+    )
+
     @classmethod
     def poll(cls, context):
-        # Operator is available only when a Mesh object is active and in Edit Mode
         return (
             context.active_object is not None and
             context.active_object.type == 'MESH' and
@@ -113,9 +143,6 @@ class SmoothSelectedVerticesWeightsOperator(bpy.types.Operator):
         # Switch to Object Mode to access vertex groups
         bpy.ops.object.mode_set(mode='OBJECT')
 
-        # Get all vertices of the mesh
-        all_vertices = obj.data.vertices
-
         # Get vertex groups
         vgroups = obj.vertex_groups
 
@@ -123,6 +150,8 @@ class SmoothSelectedVerticesWeightsOperator(bpy.types.Operator):
             self.report({'WARNING'}, "Object has no vertex groups")
             bpy.ops.object.mode_set(mode='EDIT')
             return {'CANCELLED'}
+
+        all_vertices = obj.data.vertices
 
         # Build a dictionary of neighbors for all vertices
         vertex_neighbors = {v.index: set() for v in all_vertices}
@@ -140,7 +169,7 @@ class SmoothSelectedVerticesWeightsOperator(bpy.types.Operator):
 
                 # For each selected vertex
                 for idx in selected_verts_indices:
-                    v = obj.data.vertices[idx]
+                    v = all_vertices[idx]
 
                     # Get current weight
                     try:
@@ -167,20 +196,12 @@ class SmoothSelectedVerticesWeightsOperator(bpy.types.Operator):
 
                     new_weights[v.index] = new_weight
 
-                # Apply new weights
+                # Apply new weights with threshold-based removal
                 for idx, weight in new_weights.items():
-                    vgroup.add([idx], weight, 'REPLACE')
-
-        # Remove zero weights from smoothed vertices
-        for vgroup in vgroups:
-            for idx in selected_verts_indices:
-                try:
-                    weight = vgroup.weight(idx)
-                    if weight == 0.0:
+                    if weight < self.threshold:
                         vgroup.remove([idx])
-                except RuntimeError:
-                    # Vertex is not in this group
-                    pass
+                    else:
+                        vgroup.add([idx], weight, 'REPLACE')
 
         # Switch back to Edit Mode
         bpy.ops.object.mode_set(mode='EDIT')
@@ -188,44 +209,40 @@ class SmoothSelectedVerticesWeightsOperator(bpy.types.Operator):
         # Update the mesh
         bmesh.update_edit_mesh(mesh)
 
-        self.report({'INFO'}, f"Weights smoothed over {self.iterations} iterations and zero weights removed")
+        self.report({'INFO'}, f"Weights smoothed over {self.iterations} iterations with weights below {self.threshold:.3f} removed")
         return {'FINISHED'}
 
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self)
 
-# Panel class TechAnimToolsPanel
-class TechAnimToolsPanel(bpy.types.Panel):
-    """Panel for Tech Animator's Assistant"""
-    bl_label = "Tech Animator's Assistant"
-    bl_idname = "VIEW3D_PT_techanim_tools"
+# Panel class TechAnimToolsItemPanel
+class TechAnimToolsItemPanel(bpy.types.Panel):
+    """Panel for Tech Animator's Assistant in Item tab"""
+    bl_label = "Tech Anim Tools"
+    bl_idname = "VIEW3D_PT_techanim_tools_item"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "Tech Anim Tools"
+    bl_context = "mesh_edit"
 
     def draw(self, context):
         layout = self.layout
         col = layout.column(align=True)
-        col.label(text="Bone Operations:")
-        col.operator("object.copy_bones_transforms", text="Copy Bones Transforms", icon='BONE_DATA')
-        col.operator("object.create_constraints", text="Create Constraints", icon='CONSTRAINT_BONE')
-        col.operator("object.remove_constraints", text="Remove Constraints", icon='X')
-        col.separator()
-        col.label(text="Mesh Operations:")
-        col.operator("object.check_weight_amount", text="Check Weight Amount", icon='MOD_VERTEX_WEIGHT')
 
-        # Button is available only when a Mesh object is active and in Edit Mode
-        if context.active_object and context.active_object.type == 'MESH' and context.mode == 'EDIT_MESH':
-            col.operator("object.smooth_selected_vertices_weights", text="Smooth Selected Vertices Weights", icon='MOD_SMOOTH')  # Заменили 'SMOOTH' на 'MOD_SMOOTH'
+        # Кнопки доступны только при активном объекте типа Mesh
+        if context.active_object and context.active_object.type == 'MESH':
+            col.operator("object.clean_up_weights", text="Clean Up Weights", icon='BRUSH_DATA')
+            col.operator("object.smooth_selected_vertices_weights", text="Smooth Selected Vertices Weights", icon='MOD_SMOOTH')
+            col.operator("object.check_weight_amount", text="Check Weight Amount", icon='MOD_VERTEX_WEIGHT')
+
+# Other existing panels and operators...
 
 # Register classes
 classes = (
-    CopyBonesTransformsOperator,
-    CreateConstraintsOperator,
-    RemoveConstraintsOperator,
-    CheckWeightAmountOperator,
+    CleanUpWeightsOperator,
     SmoothSelectedVerticesWeightsOperator,
-    TechAnimToolsPanel,
+    CheckWeightAmountOperator,
+    TechAnimToolsItemPanel,
+    # Other classes...
 )
 
 def register():
