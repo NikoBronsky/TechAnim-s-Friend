@@ -1,8 +1,8 @@
 bl_info = {
     "name": "TechAnim Friend",
     "author": "Aleksandr Dymov",
-    "version": (1, 3),
-    "blender": (4, 2, 2),
+    "version": (1, 5),
+    "blender": (2, 80, 0),
     "location": "3D View > Sidebar > Tech Anim Tools",
     "description": "Tools to assist technical animators",
     "category": "Rigging",
@@ -11,7 +11,6 @@ bl_info = {
 import bpy
 import bmesh
 from bpy.props import IntProperty
-from bpy.app.translations import pgettext_iface as iface_
 
 # Operator CopyBonesTransformsOperator
 class CopyBonesTransformsOperator(bpy.types.Operator):
@@ -20,10 +19,8 @@ class CopyBonesTransformsOperator(bpy.types.Operator):
     bl_label = "Copy Bones Transforms"
     bl_options = {'REGISTER', 'UNDO'}
 
-    bl_description = iface_("Copy bone transforms from the donor armature to selected recipient armatures.")
-
     def execute(self, context):
-        # Your operator code
+        # Ваш код оператора
         return {'FINISHED'}
 
 # Operator CreateConstraintsOperator
@@ -33,10 +30,8 @@ class CreateConstraintsOperator(bpy.types.Operator):
     bl_label = "Create Constraints"
     bl_options = {'REGISTER', 'UNDO'}
 
-    bl_description = iface_("Create Copy Transforms constraints from the donor armature to selected recipient armatures.")
-
     def execute(self, context):
-        # Your operator code
+        # Ваш код оператора
         return {'FINISHED'}
 
 # Operator RemoveConstraintsOperator
@@ -46,10 +41,8 @@ class RemoveConstraintsOperator(bpy.types.Operator):
     bl_label = "Remove Constraints"
     bl_options = {'REGISTER', 'UNDO'}
 
-    bl_description = iface_("Remove Copy Transforms constraints from selected recipient armatures.")
-
     def execute(self, context):
-        # Your operator code
+        # Ваш код оператора
         return {'FINISHED'}
 
 # Operator CheckWeightAmountOperator
@@ -59,17 +52,15 @@ class CheckWeightAmountOperator(bpy.types.Operator):
     bl_label = "Check Weight Amount"
     bl_options = {'REGISTER', 'UNDO'}
 
-    bl_description = iface_("Select vertices that are influenced by more than a specified number of bones.")
-
     max_influences: IntProperty(
-        name=iface_("Max Influences"),
-        description=iface_("Maximum number of bone influences per vertex"),
+        name="Max Influences",
+        description="Maximum number of bone influences per vertex",
         default=3,
         min=1,
     )
 
     def execute(self, context):
-        # Your operator code
+        # Ваш код оператора
         return {'FINISHED'}
 
     def invoke(self, context, event):
@@ -82,11 +73,9 @@ class SmoothSelectedVerticesWeightsOperator(bpy.types.Operator):
     bl_label = "Smooth Selected Vertices Weights"
     bl_options = {'REGISTER', 'UNDO'}
 
-    bl_description = iface_("Smooth the weights of selected vertices by averaging with neighboring vertices.")
-
     iterations: IntProperty(
-        name=iface_("Iterations"),
-        description=iface_("Number of smoothing iterations"),
+        name="Iterations",
+        description="Number of smoothing iterations",
         default=10,
         min=1,
         max=100,
@@ -94,7 +83,7 @@ class SmoothSelectedVerticesWeightsOperator(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        # Operator is available only in Edit Mode and when a Mesh object is active
+        # Operator is available only when a Mesh object is active and in Edit Mode
         return (
             context.active_object is not None and
             context.active_object.type == 'MESH' and
@@ -182,13 +171,24 @@ class SmoothSelectedVerticesWeightsOperator(bpy.types.Operator):
                 for idx, weight in new_weights.items():
                     vgroup.add([idx], weight, 'REPLACE')
 
+        # Remove zero weights from smoothed vertices
+        for vgroup in vgroups:
+            for idx in selected_verts_indices:
+                try:
+                    weight = vgroup.weight(idx)
+                    if weight == 0.0:
+                        vgroup.remove([idx])
+                except RuntimeError:
+                    # Vertex is not in this group
+                    pass
+
         # Switch back to Edit Mode
         bpy.ops.object.mode_set(mode='EDIT')
 
         # Update the mesh
         bmesh.update_edit_mesh(mesh)
 
-        self.report({'INFO'}, f"Weights smoothed over {self.iterations} iterations")
+        self.report({'INFO'}, f"Weights smoothed over {self.iterations} iterations and zero weights removed")
         return {'FINISHED'}
 
     def invoke(self, context, event):
@@ -197,26 +197,26 @@ class SmoothSelectedVerticesWeightsOperator(bpy.types.Operator):
 # Panel class TechAnimToolsPanel
 class TechAnimToolsPanel(bpy.types.Panel):
     """Panel for Tech Animator's Assistant"""
-    bl_label = iface_("Tech Animator's Assistant")
+    bl_label = "Tech Animator's Assistant"
     bl_idname = "VIEW3D_PT_techanim_tools"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = iface_("Tech Anim Tools")
+    bl_category = "Tech Anim Tools"
 
     def draw(self, context):
         layout = self.layout
         col = layout.column(align=True)
-        col.label(text=iface_("Bone Operations:"))
-        col.operator("object.copy_bones_transforms", text=iface_("Copy Bones Transforms"), icon='BONE_DATA')
-        col.operator("object.create_constraints", text=iface_("Create Constraints"), icon='CONSTRAINT_BONE')
-        col.operator("object.remove_constraints", text=iface_("Remove Constraints"), icon='X')
+        col.label(text="Bone Operations:")
+        col.operator("object.copy_bones_transforms", text="Copy Bones Transforms", icon='BONE_DATA')
+        col.operator("object.create_constraints", text="Create Constraints", icon='CONSTRAINT_BONE')
+        col.operator("object.remove_constraints", text="Remove Constraints", icon='X')
         col.separator()
-        col.label(text=iface_("Mesh Operations:"))
-        col.operator("object.check_weight_amount", text=iface_("Check Weight Amount"), icon='MOD_VERTEX_WEIGHT')
+        col.label(text="Mesh Operations:")
+        col.operator("object.check_weight_amount", text="Check Weight Amount", icon='MOD_VERTEX_WEIGHT')
 
-        # Button is available only in Edit Mode
-        if context.mode == 'EDIT_MESH':
-            col.operator("object.smooth_selected_vertices_weights", text=iface_("Smooth Selected Vertices Weights"), icon='SMOOTH')
+        # Button is available only when a Mesh object is active and in Edit Mode
+        if context.active_object and context.active_object.type == 'MESH' and context.mode == 'EDIT_MESH':
+            col.operator("object.smooth_selected_vertices_weights", text="Smooth Selected Vertices Weights", icon='MOD_SMOOTH')  # Заменили 'SMOOTH' на 'MOD_SMOOTH'
 
 # Register classes
 classes = (
