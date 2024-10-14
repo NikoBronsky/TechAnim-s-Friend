@@ -2,7 +2,7 @@ bl_info = {
     "name": "TechAnim Friend",
     "author": "Aleksandr Dymov",
     "version": (1, 8),
-    "blender": (2, 80, 0),
+    "blender": (4, 2, 2),
     "location": "3D View > Sidebar > Tech Anim Tools",
     "description": "Tools to assist technical animators",
     "category": "Rigging",
@@ -19,9 +19,42 @@ class CopyBonesTransformsOperator(bpy.types.Operator):
     bl_label = "Copy Bones Transforms"
     bl_options = {'REGISTER', 'UNDO'}
 
+    @classmethod
+    def poll(cls, context):
+        # Ensure that exactly two armatures are selected
+        selected_objects = context.selected_objects
+        return (
+            len(selected_objects) == 2 and
+            all(obj.type == 'ARMATURE' for obj in selected_objects)
+        )
+
     def execute(self, context):
-        # Ваш код оператора
-        self.report({'INFO'}, "Copied bone transforms")
+        selected_objects = context.selected_objects
+        recipient = context.active_object  # Active object is recipient
+        donor = [obj for obj in selected_objects if obj != recipient][0]  # The other one is donor
+
+        # Ensure both are armatures
+        if recipient.type != 'ARMATURE' or donor.type != 'ARMATURE':
+            self.report({'WARNING'}, "Both selected objects must be armatures")
+            return {'CANCELLED'}
+
+        # Enter Pose Mode for recipient
+        bpy.context.view_layer.objects.active = recipient
+        bpy.ops.object.mode_set(mode='POSE')
+
+        # Iterate over bones in recipient
+        for bone in recipient.pose.bones:
+            if bone.name in donor.pose.bones:
+                # Copy transforms from donor bone
+                donor_bone = donor.pose.bones[bone.name]
+                bone.location = donor_bone.location
+                bone.rotation_quaternion = donor_bone.rotation_quaternion
+                bone.scale = donor_bone.scale
+
+        # Return to Object Mode
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        self.report({'INFO'}, "Copied bone transforms from donor to recipient")
         return {'FINISHED'}
 
 # Operator CreateConstraintsOperator
@@ -31,9 +64,46 @@ class CreateConstraintsOperator(bpy.types.Operator):
     bl_label = "Create Constraints"
     bl_options = {'REGISTER', 'UNDO'}
 
+    @classmethod
+    def poll(cls, context):
+        # Ensure that exactly two armatures are selected
+        selected_objects = context.selected_objects
+        return (
+            len(selected_objects) == 2 and
+            all(obj.type == 'ARMATURE' for obj in selected_objects)
+        )
+
     def execute(self, context):
-        # Ваш код оператора
-        self.report({'INFO'}, "Created constraints")
+        selected_objects = context.selected_objects
+        recipient = context.active_object  # Active object is recipient
+        donor = [obj for obj in selected_objects if obj != recipient][0]  # The other one is donor
+
+        # Ensure both are armatures
+        if recipient.type != 'ARMATURE' or donor.type != 'ARMATURE':
+            self.report({'WARNING'}, "Both selected objects must be armatures")
+            return {'CANCELLED'}
+
+        # Enter Pose Mode for recipient
+        bpy.context.view_layer.objects.active = recipient
+        bpy.ops.object.mode_set(mode='POSE')
+
+        # Iterate over bones in recipient
+        for bone in recipient.pose.bones:
+            if bone.name in donor.pose.bones:
+                # Remove existing constraints named 'Copy From Donor' to avoid duplicates
+                for constraint in [c for c in bone.constraints if c.name == 'Copy From Donor']:
+                    bone.constraints.remove(constraint)
+
+                # Create a new constraint
+                constraint = bone.constraints.new(type='COPY_TRANSFORMS')
+                constraint.name = 'Copy From Donor'
+                constraint.target = donor
+                constraint.subtarget = bone.name  # Assumes bone names are the same
+
+        # Return to Object Mode
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        self.report({'INFO'}, "Constraints created from donor to recipient")
         return {'FINISHED'}
 
 # Operator RemoveConstraintsOperator
@@ -43,9 +113,28 @@ class RemoveConstraintsOperator(bpy.types.Operator):
     bl_label = "Remove Constraints"
     bl_options = {'REGISTER', 'UNDO'}
 
+    @classmethod
+    def poll(cls, context):
+        # Ensure that an armature is active
+        return context.active_object is not None and context.active_object.type == 'ARMATURE'
+
     def execute(self, context):
-        # Ваш код оператора
-        self.report({'INFO'}, "Removed constraints")
+        recipient = context.active_object
+
+        # Enter Pose Mode for recipient
+        bpy.context.view_layer.objects.active = recipient
+        bpy.ops.object.mode_set(mode='POSE')
+
+        # Iterate over bones in recipient
+        for bone in recipient.pose.bones:
+            # Remove all constraints named 'Copy From Donor'
+            for constraint in [c for c in bone.constraints if c.name == 'Copy From Donor']:
+                bone.constraints.remove(constraint)
+
+        # Return to Object Mode
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        self.report({'INFO'}, "Constraints removed from recipient")
         return {'FINISHED'}
 
 # Operator CheckWeightAmountOperator
@@ -71,7 +160,7 @@ class CheckWeightAmountOperator(bpy.types.Operator):
         mesh = obj.data
 
         # Ensure we are in Object Mode
-        current_mode = context.mode
+        current_mode = obj.mode
         if current_mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
 
@@ -267,8 +356,8 @@ class CleanUpWeightsOperator(bpy.types.Operator):
     def execute(self, context):
         obj = context.active_object
 
-        # Switch to Object Mode to access vertex groups
-        current_mode = context.mode
+        # Store current mode
+        current_mode = obj.mode
         if current_mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
 
@@ -277,7 +366,9 @@ class CleanUpWeightsOperator(bpy.types.Operator):
 
         if not vgroups:
             self.report({'WARNING'}, "Object has no vertex groups")
-            bpy.ops.object.mode_set(mode=current_mode)
+            # Restore original mode
+            if current_mode != 'OBJECT':
+                self.restore_mode(current_mode)
             return {'CANCELLED'}
 
         num_weights_removed = 0
@@ -308,10 +399,32 @@ class CleanUpWeightsOperator(bpy.types.Operator):
 
         # Restore original mode
         if current_mode != 'OBJECT':
-            bpy.ops.object.mode_set(mode=current_mode)
+            self.restore_mode(current_mode)
 
         self.report({'INFO'}, f"Removed {num_weights_removed} weights; adjusted {num_vertices_adjusted} vertices to have max {self.max_influences} influences")
         return {'FINISHED'}
+
+    def restore_mode(self, mode_name):
+        # Map current_mode to valid mode names
+        mode_mapping = {
+            'EDIT_MESH': 'EDIT',
+            'EDIT_ARMATURE': 'EDIT',
+            'EDIT_CURVE': 'EDIT',
+            'EDIT_SURFACE': 'EDIT',
+            'EDIT_METABALL': 'EDIT',
+            'EDIT_LATTICE': 'EDIT',
+            'EDIT_TEXT': 'EDIT',
+            'SCULPT': 'SCULPT',
+            'VERTEX_PAINT': 'VERTEX_PAINT',
+            'WEIGHT_PAINT': 'WEIGHT_PAINT',
+            'TEXTURE_PAINT': 'TEXTURE_PAINT',
+            'POSE': 'POSE',
+            'OBJECT': 'OBJECT',
+            # Добавьте другие режимы при необходимости
+        }
+
+        restore_mode = mode_mapping.get(mode_name, 'OBJECT')
+        bpy.ops.object.mode_set(mode=restore_mode)
 
     def invoke(self, context, event):
         return context.window_manager.invoke_props_dialog(self)
