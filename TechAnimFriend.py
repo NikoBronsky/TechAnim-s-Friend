@@ -1,9 +1,9 @@
 bl_info = {
     "name": "TechAnim Friend",
     "author": "Aleksandr Dymov",
-    "version": (1, 8),
+    "version": (1, 9),
     "blender": (4, 2, 2),
-    "location": "3D View > Sidebar > Tech Anim Tools",
+    "location": "3D View > Sidebar > Tech Anim Tools, Item Tab",
     "description": "Tools to assist technical animators",
     "category": "Rigging",
 }
@@ -12,143 +12,210 @@ import bpy
 import bmesh
 from bpy.props import IntProperty, FloatProperty
 
-# Operator CopyBonesTransformsOperator
-class CopyBonesTransformsOperator(bpy.types.Operator):
-    """Copy bone transforms from donor to recipient armature"""
-    bl_idname = "object.copy_bones_transforms"
-    bl_label = "Copy Bones Transforms"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        # Ensure that exactly two armatures are selected
-        selected_objects = context.selected_objects
-        return (
-            len(selected_objects) == 2 and
-            all(obj.type == 'ARMATURE' for obj in selected_objects)
-        )
-
-    def execute(self, context):
-        selected_objects = context.selected_objects
-        recipient = context.active_object  # Active object is recipient
-        donor = [obj for obj in selected_objects if obj != recipient][0]  # The other one is donor
-
-        # Ensure both are armatures
-        if recipient.type != 'ARMATURE' or donor.type != 'ARMATURE':
-            self.report({'WARNING'}, "Both selected objects must be armatures")
-            return {'CANCELLED'}
-
-        # Enter Pose Mode for recipient
-        bpy.context.view_layer.objects.active = recipient
-        bpy.ops.object.mode_set(mode='POSE')
-
-        # Iterate over bones in recipient
-        for bone in recipient.pose.bones:
-            if bone.name in donor.pose.bones:
-                # Copy transforms from donor bone
-                donor_bone = donor.pose.bones[bone.name]
-                bone.location = donor_bone.location
-                bone.rotation_quaternion = donor_bone.rotation_quaternion
-                bone.scale = donor_bone.scale
-
-        # Return to Object Mode
-        bpy.ops.object.mode_set(mode='OBJECT')
-
-        self.report({'INFO'}, "Copied bone transforms from donor to recipient")
-        return {'FINISHED'}
-
-# Operator CreateConstraintsOperator
-class CreateConstraintsOperator(bpy.types.Operator):
-    """Create constraints from donor to recipient armature"""
-    bl_idname = "object.create_constraints"
-    bl_label = "Create Constraints"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        # Ensure that exactly two armatures are selected
-        selected_objects = context.selected_objects
-        return (
-            len(selected_objects) == 2 and
-            all(obj.type == 'ARMATURE' for obj in selected_objects)
-        )
-
-    def execute(self, context):
-        selected_objects = context.selected_objects
-        recipient = context.active_object  # Active object is recipient
-        donor = [obj for obj in selected_objects if obj != recipient][0]  # The other one is donor
-
-        # Ensure both are armatures
-        if recipient.type != 'ARMATURE' or donor.type != 'ARMATURE':
-            self.report({'WARNING'}, "Both selected objects must be armatures")
-            return {'CANCELLED'}
-
-        # Enter Pose Mode for recipient
-        bpy.context.view_layer.objects.active = recipient
-        bpy.ops.object.mode_set(mode='POSE')
-
-        # Iterate over bones in recipient
-        for bone in recipient.pose.bones:
-            if bone.name in donor.pose.bones:
-                # Remove existing constraints named 'Copy From Donor' to avoid duplicates
-                for constraint in [c for c in bone.constraints if c.name == 'Copy From Donor']:
-                    bone.constraints.remove(constraint)
-
-                # Create a new constraint
-                constraint = bone.constraints.new(type='COPY_TRANSFORMS')
-                constraint.name = 'Copy From Donor'
-                constraint.target = donor
-                constraint.subtarget = bone.name  # Assumes bone names are the same
-
-        # Return to Object Mode
-        bpy.ops.object.mode_set(mode='OBJECT')
-
-        self.report({'INFO'}, "Constraints created from donor to recipient")
-        return {'FINISHED'}
-
-# Operator RemoveConstraintsOperator
 class RemoveConstraintsOperator(bpy.types.Operator):
-    """Remove constraints from recipient armature"""
+    """Remove all constraints from selected skeletons"""
     bl_idname = "object.remove_constraints"
     bl_label = "Remove Constraints"
     bl_options = {'REGISTER', 'UNDO'}
 
-    @classmethod
-    def poll(cls, context):
-        # Ensure that an armature is active
-        return context.active_object is not None and context.active_object.type == 'ARMATURE'
-
     def execute(self, context):
-        recipient = context.active_object
+        selected_objects = context.selected_objects
 
-        # Enter Pose Mode for recipient
-        bpy.context.view_layer.objects.active = recipient
-        bpy.ops.object.mode_set(mode='POSE')
+        if not selected_objects:
+            self.report({'WARNING'}, "No armatures selected.")
+            return {'CANCELLED'}
 
-        # Iterate over bones in recipient
-        for bone in recipient.pose.bones:
-            # Remove all constraints named 'Copy From Donor'
-            for constraint in [c for c in bone.constraints if c.name == 'Copy From Donor']:
-                bone.constraints.remove(constraint)
+        for obj in selected_objects:
+            if obj.type == 'ARMATURE':
+                for bone in obj.pose.bones:
+                    # Removing all constraints for each bone
+                    while bone.constraints:
+                        bone.constraints.remove(bone.constraints[0])
+            else:
+                self.report({'WARNING'}, "Selected object is not an armature.")
+                return {'CANCELLED'}
 
-        # Return to Object Mode
-        bpy.ops.object.mode_set(mode='OBJECT')
-
-        self.report({'INFO'}, "Constraints removed from recipient")
+        self.report({'INFO'}, "Constraints removed successfully.")
         return {'FINISHED'}
 
-# Operator CheckWeightAmountOperator
-class CheckWeightAmountOperator(bpy.types.Operator):
-    """Select vertices influenced by more than a specified number of bones"""
-    bl_idname = "object.check_weight_amount"
-    bl_label = "Check Weight Amount"
+
+class CreateConstraintsOperator(bpy.types.Operator):
+    """Create constraints between selected skeletons"""
+    bl_idname = "object.create_constraints"
+    bl_label = "Create Constraints"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    target_space: bpy.props.EnumProperty(
+        items=[
+            ('LOCAL', "Local Space", "Use local space for target bones"),
+            ('WORLD', "World Space", "Use world space for target bones")
+        ],
+        name="Target Space",
+        default='LOCAL'
+    )
+
+    owner_space: bpy.props.EnumProperty(
+        items=[
+            ('LOCAL', "Local Space", "Use local space for owner bones"),
+            ('WORLD', "World Space", "Use world space for owner bones")
+        ],
+        name="Owner Space",
+        default='LOCAL'
+    )
+
+    def execute(self, context):
+        selected_objects = context.selected_objects
+
+        if len(selected_objects) < 2:
+            self.report({'WARNING'}, "Select at least two armatures.")
+            return {'CANCELLED'}
+
+        donor_armature = selected_objects[-1]
+        recipients = selected_objects[:-1]
+
+        for recipient in recipients:
+            if donor_armature.type == 'ARMATURE' and recipient.type == 'ARMATURE':
+                for donor_bone in donor_armature.pose.bones:
+                    if donor_bone.name in recipient.pose.bones:
+                        recipient_bone = recipient.pose.bones[donor_bone.name]
+
+                        # Checking for existing constraints to avoid duplication
+                        existing_constraints = [c for c in recipient_bone.constraints if c.target == donor_armature and c.subtarget == donor_bone.name]
+                        if not existing_constraints:
+                            constraint = recipient_bone.constraints.new('COPY_TRANSFORMS')
+                            constraint.target = donor_armature
+                            constraint.subtarget = donor_bone.name
+                            constraint.target_space = self.target_space
+                            constraint.owner_space = self.owner_space
+            else:
+                self.report({'WARNING'}, "Both objects must be armatures.")
+                return {'CANCELLED'}
+
+        self.report({'INFO'}, "Constraints created successfully.")
+        return {'FINISHED'}
+
+
+class CopyBonesTransformsEditModeOperator(bpy.types.Operator):
+    """Copy bone transforms in Edit Mode"""
+    bl_idname = "object.copy_bones_transforms_edit_mode"
+    bl_label = "Copy Bones Transforms (Edit Mode)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        selected_objects = context.selected_objects
+
+        if len(selected_objects) < 2:
+            self.report({'WARNING'}, "Select at least two armatures.")
+            return {'CANCELLED'}
+
+        donor_armature = selected_objects[-1]  # последний выбранный
+        recipients = selected_objects[:-1]  # все остальные
+
+        # Переключаемся в Edit Mode для всех объектов
+        bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.ops.object.select_all(action='DESELECT')
+        donor_armature.select_set(True)
+        bpy.context.view_layer.objects.active = donor_armature
+        bpy.ops.object.mode_set(mode='EDIT')
+
+        for recipient in recipients:
+            if donor_armature.type == 'ARMATURE' and recipient.type == 'ARMATURE':
+                bpy.ops.object.mode_set(mode='OBJECT')
+                recipient.select_set(True)
+                bpy.context.view_layer.objects.active = recipient
+                bpy.ops.object.mode_set(mode='EDIT')
+
+                # Копируем трансформации костей в Edit Mode
+                for donor_bone in donor_armature.data.edit_bones:
+                    if donor_bone.name in recipient.data.edit_bones:
+                        recipient_bone = recipient.data.edit_bones[donor_bone.name]
+                        recipient_bone.head = donor_bone.head
+                        recipient_bone.tail = donor_bone.tail
+                        recipient_bone.roll = donor_bone.roll
+
+        # Возвращаемся в исходный режим
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        self.report({'INFO'}, "Bone transforms copied successfully in Edit Mode.")
+        return {'FINISHED'}
+
+# Operator to clean up bone influences on vertices (max influences check)
+class CleanUpBoneInfluencesOperator(bpy.types.Operator):
+    """Clean up vertices with more than the specified number of bone influences"""
+    bl_idname = "object.clean_up_bone_influences"
+    bl_label = "Clean Up Bone Influences"
     bl_options = {'REGISTER', 'UNDO'}
 
     max_influences: IntProperty(
         name="Max Influences",
         description="Maximum number of bone influences per vertex",
-        default=4,
+        default=3,
         min=1,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj and obj.type == 'MESH' and context.mode == 'EDIT_MESH'
+
+    def execute(self, context):
+        obj = context.active_object
+
+        # Ensure we're in Object Mode
+        current_mode = obj.mode
+        if current_mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        mesh = obj.data
+        vgroups = obj.vertex_groups
+
+        if not vgroups:
+            self.report({'WARNING'}, "Object has no vertex groups")
+            return {'CANCELLED'}
+
+        num_weights_removed = 0
+        num_vertices_adjusted = 0
+
+        for vert in mesh.vertices:
+            # Get all groups and weights for this vertex
+            weights = []
+            for g in vert.groups:
+                group = vgroups[g.group]
+                weight = g.weight
+                weights.append((group, weight))
+
+            # Sort weights in descending order
+            weights.sort(key=lambda x: x[1], reverse=True)
+
+            if len(weights) > self.max_influences:
+                # Remove the smallest weights to limit max influences
+                for group, weight in weights[self.max_influences:]:
+                    group.remove([vert.index])
+                    num_weights_removed += 1
+                num_vertices_adjusted += 1
+
+            # Normalize remaining weights
+            total_weight = sum(w[1] for w in weights[:self.max_influences])
+            if total_weight > 0:
+                for group, weight in weights[:self.max_influences]:
+                    group.add([vert.index], weight / total_weight, 'REPLACE')
+
+        self.report({'INFO'}, f"Removed {num_weights_removed} weights; adjusted {num_vertices_adjusted} vertices to have max {self.max_influences} influences")
+        return {'FINISHED'}
+
+# Operator to clean up weights below a threshold and normalize
+class CleanUpWeightsThresholdOperator(bpy.types.Operator):
+    """Clean up weights below a threshold and normalize the remaining weights"""
+    bl_idname = "object.clean_up_weights_threshold"
+    bl_label = "Clean Up Weights by Threshold"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    threshold: FloatProperty(
+        name="Threshold",
+        description="Weights below this value will be removed",
+        default=0.050,
+        min=0.0,
+        max=1.0,
     )
 
     @classmethod
@@ -157,51 +224,45 @@ class CheckWeightAmountOperator(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        mesh = obj.data
 
-        # Ensure we are in Object Mode
+        # Ensure we're in Object Mode
         current_mode = obj.mode
         if current_mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
 
+        mesh = obj.data
         vgroups = obj.vertex_groups
 
-        vertices_to_select = []
+        if not vgroups:
+            self.report({'WARNING'}, "Object has no vertex groups")
+            return {'CANCELLED'}
+
+        num_weights_removed = 0
+
         for vert in mesh.vertices:
-            groups = [g.group for g in vert.groups]
-            if len(groups) > self.max_influences:
-                vertices_to_select.append(vert.index)
+            # Get all groups and weights for this vertex
+            weights = []
+            for g in vert.groups:
+                group = vgroups[g.group]
+                weight = g.weight
+                if weight < self.threshold:
+                    # Remove weight below threshold
+                    group.remove([vert.index])
+                    num_weights_removed += 1
+                else:
+                    weights.append((group, weight))
 
-        if not vertices_to_select:
-            self.report({'INFO'}, "No vertices exceed the maximum number of influences")
-            # Restore original mode
-            if current_mode != 'OBJECT':
-                bpy.ops.object.mode_set(mode=current_mode)
-            return {'FINISHED'}
+            # Normalize remaining weights
+            total_weight = sum(w[1] for w in weights)
+            if total_weight > 0:
+                for group, weight in weights:
+                    group.add([vert.index], weight / total_weight, 'REPLACE')
 
-        # Deselect all vertices
-        for vert in mesh.vertices:
-            vert.select = False
-
-        # Select vertices exceeding max influences
-        for idx in vertices_to_select:
-            mesh.vertices[idx].select = True
-
-        # Switch to Edit Mode to see selection
-        bpy.ops.object.mode_set(mode='EDIT')
-
-        self.report({'INFO'}, f"Selected {len(vertices_to_select)} vertices exceeding {self.max_influences} influences")
-
-        # Restore original mode if needed
-        if current_mode == 'OBJECT':
-            bpy.ops.object.mode_set(mode='OBJECT')
-
+        self.report({'INFO'}, f"Removed {num_weights_removed} weights below {self.threshold:.3f}")
         return {'FINISHED'}
 
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
 
-# Operator SmoothSelectedVerticesWeightsOperator
+# Operator to smooth selected vertices weights
 class SmoothSelectedVerticesWeightsOperator(bpy.types.Operator):
     """Smooth weights of selected vertices over specified iterations"""
     bl_idname = "object.smooth_selected_vertices_weights"
@@ -324,172 +385,83 @@ class SmoothSelectedVerticesWeightsOperator(bpy.types.Operator):
         self.report({'INFO'}, f"Weights smoothed over {self.iterations} iterations with weights below {self.threshold:.3f} removed")
         return {'FINISHED'}
 
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
+# Panel for UI - Tech Anim Tools
+class TechAnimToolsPanel(bpy.types.Panel):
+    bl_label = "Tech Anim Tools"
+    bl_idname = "OBJECT_PT_techanim_tools"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Tech Anim Tools'
 
-# Operator CleanUpWeightsOperator
-class CleanUpWeightsOperator(bpy.types.Operator):
-    """Clean up weights: remove weights below threshold and limit max influences per vertex"""
-    bl_idname = "object.clean_up_weights"
-    bl_label = "Clean Up Weights"
-    bl_options = {'REGISTER', 'UNDO'}
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column()
 
-    threshold: FloatProperty(
-        name="Threshold",
-        description="Weights below this value will be removed",
-        default=0.050,
-        min=0.0,
-        max=1.0,
-    )
+        # Section for bone transforms in Edit Mode
+        col.label(text="Bone Transforms (Edit Mode):")
+        col.operator("object.copy_bones_transforms_edit_mode", text="Copy Bones Transforms (Edit Mode)")
 
-    max_influences: IntProperty(
-        name="Max Influences",
-        description="Maximum number of bone influences per vertex",
-        default=4,
-        min=1,
-    )
+        col.separator()
+
+        # Section for Constraints
+        col.label(text="Constraints:")
+        col.operator("object.create_constraints", text="Create Constraints")
+        col.operator("object.remove_constraints", text="Remove Constraints")
+
+        col.separator()
+
+        # Section for Vertex Weights Tools (Edit Mode)
+        if context.mode == 'EDIT_MESH' and context.active_object and context.active_object.type == 'MESH':  # Check for Edit Mode and Mesh
+            col.label(text="Vertex Weights Tools:")
+            col.operator("object.clean_up_bone_influences", text="Clean Up Bone Influences")
+            col.operator("object.clean_up_weights_threshold", text="Clean Up Weights by Threshold")
+            col.operator("object.smooth_selected_vertices_weights", text="Smooth Selected Vertices Weights")
+
+
+# Panel for UI - Item Tab (for vertex weight operations)
+class ItemWeightToolsPanel(bpy.types.Panel):
+    bl_label = "Vertex Weight Tools"
+    bl_idname = "MESH_PT_vertex_weight_tools"
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = "data"
+    bl_category = 'Item'
 
     @classmethod
     def poll(cls, context):
-        return context.active_object is not None and context.active_object.type == 'MESH'
-
-    def execute(self, context):
-        obj = context.active_object
-
-        # Store current mode
-        current_mode = obj.mode
-        if current_mode != 'OBJECT':
-            bpy.ops.object.mode_set(mode='OBJECT')
-
-        mesh = obj.data
-        vgroups = obj.vertex_groups
-
-        if not vgroups:
-            self.report({'WARNING'}, "Object has no vertex groups")
-            # Restore original mode
-            if current_mode != 'OBJECT':
-                self.restore_mode(current_mode)
-            return {'CANCELLED'}
-
-        num_weights_removed = 0
-        num_vertices_adjusted = 0
-
-        for vert in mesh.vertices:
-            # Get all groups and weights for this vertex
-            weights = []
-            for g in vert.groups:
-                group = vgroups[g.group]
-                weight = g.weight
-                if weight < self.threshold:
-                    # Remove weight below threshold
-                    group.remove([vert.index])
-                    num_weights_removed += 1
-                else:
-                    weights.append((group, weight))
-
-            # Sort weights in descending order
-            weights.sort(key=lambda x: x[1], reverse=True)
-
-            if len(weights) > self.max_influences:
-                # Remove smallest weights to limit max influences
-                for group, weight in weights[self.max_influences:]:
-                    group.remove([vert.index])
-                    num_weights_removed += 1
-                num_vertices_adjusted += 1
-
-        # Restore original mode
-        if current_mode != 'OBJECT':
-            self.restore_mode(current_mode)
-
-        self.report({'INFO'}, f"Removed {num_weights_removed} weights; adjusted {num_vertices_adjusted} vertices to have max {self.max_influences} influences")
-        return {'FINISHED'}
-
-    def restore_mode(self, mode_name):
-        # Map current_mode to valid mode names
-        mode_mapping = {
-            'EDIT_MESH': 'EDIT',
-            'EDIT_ARMATURE': 'EDIT',
-            'EDIT_CURVE': 'EDIT',
-            'EDIT_SURFACE': 'EDIT',
-            'EDIT_METABALL': 'EDIT',
-            'EDIT_LATTICE': 'EDIT',
-            'EDIT_TEXT': 'EDIT',
-            'SCULPT': 'SCULPT',
-            'VERTEX_PAINT': 'VERTEX_PAINT',
-            'WEIGHT_PAINT': 'WEIGHT_PAINT',
-            'TEXTURE_PAINT': 'TEXTURE_PAINT',
-            'POSE': 'POSE',
-            'OBJECT': 'OBJECT',
-            # Добавьте другие режимы при необходимости
-        }
-
-        restore_mode = mode_mapping.get(mode_name, 'OBJECT')
-        bpy.ops.object.mode_set(mode=restore_mode)
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
-
-# Panel class TechAnimToolsPanel
-class TechAnimToolsPanel(bpy.types.Panel):
-    """Panel for Tech Animator's Assistant"""
-    bl_label = "Tech Anim Tools"
-    bl_idname = "VIEW3D_PT_techanim_tools"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "Tech Anim Tools"
+        return context.active_object is not None and context.active_object.mode == 'EDIT_MESH'
 
     def draw(self, context):
         layout = self.layout
-        col = layout.column(align=True)
-        col.label(text="Bone Operations:")
-        col.operator("object.copy_bones_transforms", text="Copy Bones Transforms", icon='BONE_DATA')
-        col.operator("object.create_constraints", text="Create Constraints", icon='CONSTRAINT_BONE')
-        col.operator("object.remove_constraints", text="Remove Constraints", icon='X')
-        col.separator()
-        col.label(text="Mesh Operations:")
-        col.operator("object.clean_up_weights", text="Clean Up Weights", icon='BRUSH_DATA')
-        col.operator("object.smooth_selected_vertices_weights", text="Smooth Selected Vertices Weights", icon='MOD_SMOOTH')
-        col.operator("object.check_weight_amount", text="Check Weight Amount", icon='MOD_VERTEX_WEIGHT')
+        col = layout.column()
 
-# Panel class TechAnimToolsItemPanel
-class TechAnimToolsItemPanel(bpy.types.Panel):
-    """Panel for Tech Animator's Assistant in Item tab"""
-    bl_label = "Tech Anim Tools"
-    bl_idname = "VIEW3D_PT_techanim_tools_item"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_context = "mesh_edit"
-    bl_category = "Item"
+        # Adding buttons for operators related to vertex weights
+        col.operator("object.clean_up_bone_influences", text="Clean Up Bone Influences")
+        col.operator("object.clean_up_weights_threshold", text="Clean Up Weights by Threshold")
+        col.operator("object.smooth_selected_vertices_weights", text="Smooth Selected Vertices Weights")
 
-    def draw(self, context):
-        layout = self.layout
-        col = layout.column(align=True)
-
-        # Кнопки доступны только при активном объекте типа Mesh
-        if context.active_object and context.active_object.type == 'MESH':
-            col.operator("object.clean_up_weights", text="Clean Up Weights", icon='BRUSH_DATA')
-            col.operator("object.smooth_selected_vertices_weights", text="Smooth Selected Vertices Weights", icon='MOD_SMOOTH')
-            col.operator("object.check_weight_amount", text="Check Weight Amount", icon='MOD_VERTEX_WEIGHT')
-
-# Register classes
-classes = (
-    CopyBonesTransformsOperator,
-    CreateConstraintsOperator,
-    RemoveConstraintsOperator,
-    CheckWeightAmountOperator,
-    SmoothSelectedVerticesWeightsOperator,
-    CleanUpWeightsOperator,
-    TechAnimToolsPanel,
-    TechAnimToolsItemPanel,
-)
-
+# Registration functions
 def register():
-    for cls in classes:
-        bpy.utils.register_class(cls)
+    bpy.utils.register_class(CopyBonesTransformsEditModeOperator)
+    bpy.utils.register_class(CreateConstraintsOperator)
+    bpy.utils.register_class(RemoveConstraintsOperator)
+    bpy.utils.register_class(CleanUpBoneInfluencesOperator)
+    bpy.utils.register_class(CleanUpWeightsThresholdOperator)
+    bpy.utils.register_class(SmoothSelectedVerticesWeightsOperator)
+    bpy.utils.register_class(TechAnimToolsPanel)
+    bpy.utils.register_class(ItemWeightToolsPanel)
 
 def unregister():
-    for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
+    bpy.utils.unregister_class(CopyBonesTransformsEditModeOperator)
+    bpy.utils.unregister_class(CreateConstraintsOperator)
+    bpy.utils.unregister_class(RemoveConstraintsOperator)
+    bpy.utils.unregister_class(CleanUpBoneInfluencesOperator)
+    bpy.utils.unregister_class(CleanUpWeightsThresholdOperator)
+    bpy.utils.unregister_class(SmoothSelectedVerticesWeightsOperator)
+    bpy.utils.unregister_class(TechAnimToolsPanel)
+    bpy.utils.unregister_class(ItemWeightToolsPanel)
+
+
 
 if __name__ == "__main__":
     register()
