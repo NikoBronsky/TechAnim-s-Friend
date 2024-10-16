@@ -141,7 +141,7 @@ class CopyBonesTransformsEditModeOperator(bpy.types.Operator):
 
 # Operator to clean up bone influences on vertices (max influences check)
 class CleanUpBoneInfluencesOperator(bpy.types.Operator):
-    """Clean up vertices with more than the specified number of bone influences"""
+    """Clean up vertices with more than the specified number of bone influences, removing the least important ones and normalizing the rest"""
     bl_idname = "object.clean_up_bone_influences"
     bl_label = "Clean Up Bone Influences"
     bl_options = {'REGISTER', 'UNDO'}
@@ -155,8 +155,7 @@ class CleanUpBoneInfluencesOperator(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        obj = context.active_object
-        return obj and obj.type == 'MESH' and context.mode == 'EDIT_MESH'
+        return context.active_object is not None and context.active_object.type == 'MESH'
 
     def execute(self, context):
         obj = context.active_object
@@ -202,6 +201,7 @@ class CleanUpBoneInfluencesOperator(bpy.types.Operator):
 
         self.report({'INFO'}, f"Removed {num_weights_removed} weights; adjusted {num_vertices_adjusted} vertices to have max {self.max_influences} influences")
         return {'FINISHED'}
+
 
 # Operator to clean up weights below a threshold and normalize
 class CleanUpWeightsThresholdOperator(bpy.types.Operator):
@@ -385,6 +385,45 @@ class SmoothSelectedVerticesWeightsOperator(bpy.types.Operator):
         self.report({'INFO'}, f"Weights smoothed over {self.iterations} iterations with weights below {self.threshold:.3f} removed")
         return {'FINISHED'}
 
+
+# Operator for copying bone transforms (Pose Mode) considering parent bones
+class CopyBonesTransformsPoseModeOperator(bpy.types.Operator):
+    """Copy bone transforms in Pose Mode considering parent transforms"""
+    bl_idname = "object.copy_bones_transforms_pose_mode"
+    bl_label = "Copy Bones Transforms (Pose Mode)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        selected_objects = context.selected_objects
+
+        if len(selected_objects) < 2:
+            self.report({'WARNING'}, "Select at least two armatures.")
+            return {'CANCELLED'}
+
+        donor_armature = selected_objects[-1]  # last selected
+        recipients = selected_objects[:-1]  # all other selected objects
+
+        for recipient in recipients:
+            if donor_armature.type == 'ARMATURE' and recipient.type == 'ARMATURE':
+                for donor_bone in donor_armature.pose.bones:
+                    if donor_bone.name in recipient.pose.bones:
+                        recipient_bone = recipient.pose.bones[donor_bone.name]
+
+                        # Copying relative to parent bones
+                        if donor_bone.parent:
+                            parent_matrix_inv = donor_bone.parent.matrix.inverted()
+                            recipient_bone.matrix = parent_matrix_inv @ donor_bone.matrix
+                        else:
+                            recipient_bone.matrix = donor_bone.matrix
+            else:
+                self.report({'WARNING'}, "Both objects must be armatures.")
+                return {'CANCELLED'}
+
+        self.report({'INFO'}, "Bone transforms copied successfully in Pose Mode.")
+        return {'FINISHED'}
+
+
+
 # Panel for UI - Tech Anim Tools
 class TechAnimToolsPanel(bpy.types.Panel):
     bl_label = "Tech Anim Tools"
@@ -397,25 +436,27 @@ class TechAnimToolsPanel(bpy.types.Panel):
         layout = self.layout
         col = layout.column()
 
-        # Section for bone transforms in Edit Mode
         col.label(text="Bone Transforms (Edit Mode):")
         col.operator("object.copy_bones_transforms_edit_mode", text="Copy Bones Transforms (Edit Mode)")
 
         col.separator()
 
-        # Section for Constraints
         col.label(text="Constraints:")
         col.operator("object.create_constraints", text="Create Constraints")
         col.operator("object.remove_constraints", text="Remove Constraints")
 
         col.separator()
 
-        # Section for Vertex Weights Tools (Edit Mode)
-        if context.mode == 'EDIT_MESH' and context.active_object and context.active_object.type == 'MESH':  # Check for Edit Mode and Mesh
-            col.label(text="Vertex Weights Tools:")
-            col.operator("object.clean_up_bone_influences", text="Clean Up Bone Influences")
-            col.operator("object.clean_up_weights_threshold", text="Clean Up Weights by Threshold")
-            col.operator("object.smooth_selected_vertices_weights", text="Smooth Selected Vertices Weights")
+        col.label(text="Bone Transforms (Pose Mode):")
+        col.operator("object.copy_bones_transforms_pose_mode", text="Copy Bones Transforms (Pose Mode)")
+
+        col.separator()
+
+        col.label(text="Vertex Weight Tools:")
+        col.operator("object.clean_up_bone_influences", text="Clean Up Bone Influences")
+        col.operator("object.clean_up_weights_threshold", text="Clean Up Weights by Threshold")
+        col.operator("object.smooth_selected_vertices_weights", text="Smooth Selected Vertices Weights")
+
 
 
 # Panel for UI - Item Tab (for vertex weight operations)
@@ -443,6 +484,7 @@ class ItemWeightToolsPanel(bpy.types.Panel):
 # Registration functions
 def register():
     bpy.utils.register_class(CopyBonesTransformsEditModeOperator)
+    bpy.utils.register_class(CopyBonesTransformsPoseModeOperator)       
     bpy.utils.register_class(CreateConstraintsOperator)
     bpy.utils.register_class(RemoveConstraintsOperator)
     bpy.utils.register_class(CleanUpBoneInfluencesOperator)
@@ -453,6 +495,7 @@ def register():
 
 def unregister():
     bpy.utils.unregister_class(CopyBonesTransformsEditModeOperator)
+    bpy.utils.unregister_class(CopyBonesTransformsPoseModeOperator)
     bpy.utils.unregister_class(CreateConstraintsOperator)
     bpy.utils.unregister_class(RemoveConstraintsOperator)
     bpy.utils.unregister_class(CleanUpBoneInfluencesOperator)
