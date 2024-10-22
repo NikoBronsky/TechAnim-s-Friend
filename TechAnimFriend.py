@@ -422,6 +422,219 @@ class CopyBonesTransformsPoseModeOperator(bpy.types.Operator):
         self.report({'INFO'}, "Bone transforms copied successfully in Pose Mode.")
         return {'FINISHED'}
 
+# Operator to symmetrize and smooth weights
+class SymmetrizeAndSmoothWeightsOperator(bpy.types.Operator):
+    """Symmetrize and smooth weights across a specified axis"""
+    bl_idname = "object.symmetrize_and_smooth_weights"
+    bl_label = "Symmetrize and Smooth Weights"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    axis: bpy.props.EnumProperty(
+        items=[
+            ('X', "X Axis", "Symmetrize across X Axis"),
+            ('Y', "Y Axis", "Symmetrize across Y Axis"),
+            ('Z', "Z Axis", "Symmetrize across Z Axis")
+        ],
+        name="Axis",
+        default='X'
+    )
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (
+            obj is not None and
+            obj.type == 'MESH' and
+            (
+                context.mode == 'EDIT_MESH' or
+                context.mode == 'PAINT_WEIGHT'
+            )
+        )
+
+    def execute(self, context):
+        obj = context.active_object
+        mesh = obj.data
+        axis_index = {'X': 0, 'Y': 1, 'Z': 2}[self.axis]
+
+        # Ensure we are in Object Mode to access vertex groups
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        vgroups = obj.vertex_groups
+
+        if not vgroups:
+            self.report({'WARNING'}, "Object has no vertex groups")
+            return {'CANCELLED'}
+
+        # Build a KDTree for efficient spatial searches
+        size = len(mesh.vertices)
+        kd = mathutils.kdtree.KDTree(size)
+
+        for i, v in enumerate(mesh.vertices):
+            kd.insert(v.co, i)
+        kd.balance()
+
+        # Dictionary to store processed vertex pairs
+        processed_verts = {}
+
+        for v in mesh.vertices:
+            index = v.index
+            if index in processed_verts:
+                continue
+
+            # Find the symmetric point
+            coord = v.co.copy()
+            coord[axis_index] *= -1  # Mirror across the selected axis
+
+            # Find the nearest vertex to the mirrored coordinate
+            _, sym_index, _ = kd.find(coord)
+
+            if sym_index == index:
+                # Vertex is on the symmetry plane
+                continue
+
+            if sym_index in processed_verts:
+                continue
+
+            # Average the weights of the vertex and its symmetric counterpart
+            for vgroup in vgroups:
+                try:
+                    weight = vgroup.weight(index)
+                except RuntimeError:
+                    weight = 0.0
+                try:
+                    sym_weight = vgroup.weight(sym_index)
+                except RuntimeError:
+                    sym_weight = 0.0
+
+                avg_weight = (weight + sym_weight) / 2
+
+                # Set the averaged weight to both vertices
+                if avg_weight > 0.0:
+                    vgroup.add([index, sym_index], avg_weight, 'REPLACE')
+                else:
+                    vgroup.remove([index, sym_index])
+
+            # Mark vertices as processed
+            processed_verts[index] = True
+            processed_verts[sym_index] = True
+
+        # Normalize weights
+        for v in mesh.vertices:
+            total_weight = 0.0
+            weights = {}
+            for g in v.groups:
+                weights[g.group] = g.weight
+                total_weight += g.weight
+
+            if total_weight > 0.0:
+                for group_idx, weight in weights.items():
+                    normalized_weight = weight / total_weight
+                    vgroups[group_idx].add([v.index], normalized_weight, 'REPLACE')
+
+        # Return to previous mode
+        if context.mode == 'EDIT_MESH':
+            bpy.ops.object.mode_set(mode='EDIT')
+        elif context.mode == 'PAINT_WEIGHT':
+            bpy.ops.object.mode_set(mode='WEIGHT_PAINT')
+
+        self.report({'INFO'}, f"Weights symmetrized and smoothed across {self.axis}-axis.")
+        return {'FINISHED'}
+
+# Operator to distribute weights based on distance from bone
+class DistributeWeightsByDistanceOperator(bpy.types.Operator):
+    """Distribute weights based on distance from active bone"""
+    bl_idname = "object.distribute_weights_by_distance"
+    bl_label = "Distribute Weights by Distance"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    modifier: FloatProperty(
+        name="Modifier",
+        description="Modifier between -1 and 1 to adjust weight distribution",
+        default=1.0,
+        min=-1.0,
+        max=1.0,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (
+            obj is not None and
+            obj.type == 'MESH' and
+            context.mode == 'EDIT_MESH'
+        )
+
+    def execute(self, context):
+        obj = context.active_object
+        mesh = obj.data
+
+        # Get selected vertices
+        bm = bmesh.from_edit_mesh(mesh)
+        selected_verts = [v for v in bm.verts if v.select]
+
+        if not selected_verts:
+            self.report({'WARNING'}, "No vertices selected")
+            return {'CANCELLED'}
+
+        # Get the active bone in Pose mode
+        armature = obj.find_armature()
+        if not armature or armature.mode != 'POSE':
+            self.report({'WARNING'}, "An armature in Pose mode must be active")
+            return {'CANCELLED'}
+
+        active_bone = armature.pose.bones.get(armature.data.bones.active.name)
+        if not active_bone:
+            self.report({'WARNING'}, "No active bone found")
+            return {'CANCELLED'}
+
+        bone_head = armature.matrix_world @ active_bone.head
+        bone_tail = armature.matrix_world @ active_bone.tail
+
+        # Calculate bone direction vector
+        bone_dir = (bone_tail - bone_head).normalized()
+
+        # Adjust weights based on distance
+        vgroup = obj.vertex_groups.get(active_bone.name)
+        if not vgroup:
+            self.report({'WARNING'}, f"No vertex group found for bone '{active_bone.name}'")
+            return {'CANCELLED'}
+
+        # Switch to Object Mode to modify vertex groups
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        distances = []
+        for v in selected_verts:
+            world_co = obj.matrix_world @ v.co
+            # Project vertex onto bone direction
+            proj_length = (world_co - bone_head).dot(bone_dir)
+            proj_point = bone_head + bone_dir * proj_length
+            distance = (world_co - proj_point).length
+            distances.append((v.index, distance))
+
+        # Normalize distances to range between 0 and 1
+        min_dist = min(distances, key=lambda x: x[1])[1]
+        max_dist = max(distances, key=lambda x: x[1])[1]
+        dist_range = max_dist - min_dist if max_dist != min_dist else 1.0
+
+        for idx, dist in distances:
+            normalized_dist = (dist - min_dist) / dist_range
+
+            # Adjust weight based on modifier
+            if self.modifier >= 0:
+                weight = (1 - normalized_dist) * (1 - self.modifier) + normalized_dist * self.modifier
+            else:
+                weight = normalized_dist * (1 + self.modifier) + (1 - normalized_dist) * -self.modifier
+
+            # Ensure weight is between 0 and 1
+            weight = max(0.0, min(1.0, weight))
+
+            vgroup.add([idx], weight, 'REPLACE')
+
+        # Return to Edit Mode
+        bpy.ops.object.mode_set(mode='EDIT')
+
+        self.report({'INFO'}, "Weights adjusted based on distance from bone.")
+        return {'FINISHED'}
 
 
 # Panel for UI - Tech Anim Tools
@@ -456,8 +669,8 @@ class TechAnimToolsPanel(bpy.types.Panel):
         col.operator("object.clean_up_bone_influences", text="Clean Up Bone Influences")
         col.operator("object.clean_up_weights_threshold", text="Clean Up Weights by Threshold")
         col.operator("object.smooth_selected_vertices_weights", text="Smooth Selected Vertices Weights")
-
-
+        col.operator("object.symmetrize_and_smooth_weights", text="Symmetrize and Smooth Weights")
+        col.operator("object.distribute_weights_by_distance", text="Distribute Weights by Distance")
 
 # Panel for UI - Item Tab (for vertex weight operations)
 class ItemWeightToolsPanel(bpy.types.Panel):
@@ -480,16 +693,21 @@ class ItemWeightToolsPanel(bpy.types.Panel):
         col.operator("object.clean_up_bone_influences", text="Clean Up Bone Influences")
         col.operator("object.clean_up_weights_threshold", text="Clean Up Weights by Threshold")
         col.operator("object.smooth_selected_vertices_weights", text="Smooth Selected Vertices Weights")
+        col.operator("object.symmetrize_and_smooth_weights", text="Symmetrize and Smooth Weights")
+        col.operator("object.distribute_weights_by_distance", text="Distribute Weights by Distance")
+
 
 # Registration functions
 def register():
     bpy.utils.register_class(CopyBonesTransformsEditModeOperator)
-    bpy.utils.register_class(CopyBonesTransformsPoseModeOperator)       
+    bpy.utils.register_class(CopyBonesTransformsPoseModeOperator)
     bpy.utils.register_class(CreateConstraintsOperator)
     bpy.utils.register_class(RemoveConstraintsOperator)
     bpy.utils.register_class(CleanUpBoneInfluencesOperator)
     bpy.utils.register_class(CleanUpWeightsThresholdOperator)
     bpy.utils.register_class(SmoothSelectedVerticesWeightsOperator)
+    bpy.utils.register_class(SymmetrizeAndSmoothWeightsOperator)
+    bpy.utils.register_class(DistributeWeightsByDistanceOperator)
     bpy.utils.register_class(TechAnimToolsPanel)
     bpy.utils.register_class(ItemWeightToolsPanel)
 
@@ -501,10 +719,10 @@ def unregister():
     bpy.utils.unregister_class(CleanUpBoneInfluencesOperator)
     bpy.utils.unregister_class(CleanUpWeightsThresholdOperator)
     bpy.utils.unregister_class(SmoothSelectedVerticesWeightsOperator)
+    bpy.utils.unregister_class(SymmetrizeAndSmoothWeightsOperator)
+    bpy.utils.unregister_class(DistributeWeightsByDistanceOperator)
     bpy.utils.unregister_class(TechAnimToolsPanel)
     bpy.utils.unregister_class(ItemWeightToolsPanel)
-
-
 
 if __name__ == "__main__":
     register()
